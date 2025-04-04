@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { 
   View, 
   Text, 
@@ -18,6 +18,7 @@ import { supabase } from '../../supabaseClient';
 import { useRouter } from 'expo-router';
 import axios from 'axios';
 import { MaterialIcons, Ionicons } from '@expo/vector-icons';
+import Svg, { Rect, Text as SvgText } from 'react-native-svg';
 
 const { width } = Dimensions.get('window');
 
@@ -25,11 +26,13 @@ export default function Dashboard() {
   const [user, setUser] = useState<{ name?: string; email?: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [image, setImage] = useState<string | null>(null);
+  const [imageSize, setImageSize] = useState({ width: 0, height: 0 });
   const [ipAddress, setIpAddress] = useState('');
   const [response, setResponse] = useState<{ detections: Array<{ class: string; confidence: number; bbox: any }> } | null>(null);
   const [processingImage, setProcessingImage] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
+  const imageRef = useRef(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -70,6 +73,17 @@ export default function Dashboard() {
       isMounted = false;
     };
   }, []);
+
+  // Get image dimensions when an image is selected
+  useEffect(() => {
+    if (image) {
+      Image.getSize(image, (width, height) => {
+        setImageSize({ width, height });
+      }, (error) => {
+        console.error("Failed to get image size:", error);
+      });
+    }
+  }, [image]);
 
   const pickImage = async () => {
     try {
@@ -187,6 +201,42 @@ export default function Dashboard() {
     }
   };
 
+  // Calculate display image dimensions to maintain aspect ratio within the screen
+  const calculateDisplayDimensions = () => {
+    const containerWidth = width - 40; // Container width accounting for padding
+    
+    if (imageSize.width === 0 || imageSize.height === 0) {
+      return { width: containerWidth, height: containerWidth };
+    }
+    
+    const aspectRatio = imageSize.width / imageSize.height;
+    return {
+      width: containerWidth,
+      height: containerWidth / aspectRatio
+    };
+  };
+
+  // Scale bounding box coordinates from original image to display size
+  const scaleBoundingBox = (bbox: any) => {
+    const displayDims = calculateDisplayDimensions();
+    const scaleX = displayDims.width / imageSize.width;
+    const scaleY = displayDims.height / imageSize.height;
+    
+    return {
+      x: bbox.x1 * scaleX,
+      y: bbox.y1 * scaleY,
+      width: (bbox.x2 - bbox.x1) * scaleX,
+      height: (bbox.y2 - bbox.y1) * scaleY
+    };
+  };
+
+  // Get color based on confidence
+  const getConfidenceColor = (confidence: number) => {
+    if (confidence > 0.7) return '#4CAF50';
+    if (confidence > 0.4) return '#FFC107';
+    return '#F44336';
+  };
+
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
@@ -194,6 +244,8 @@ export default function Dashboard() {
       </View>
     );
   }
+
+  const displayDimensions = calculateDisplayDimensions();
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -230,7 +282,52 @@ export default function Dashboard() {
         <View style={styles.imageSection}>
           {image ? (
             <View style={styles.imageContainer}>
-              <Image source={{ uri: image }} style={styles.image} />
+              <Image 
+                ref={imageRef}
+                source={{ uri: image }} 
+                style={[styles.image, { width: displayDimensions.width, height: displayDimensions.height }]} 
+              />
+              
+              {/* SVG overlay for bounding boxes */}
+              {response && response.detections && response.detections.length > 0 && (
+                <Svg 
+                  style={StyleSheet.absoluteFill}
+                  width={displayDimensions.width}
+                  height={displayDimensions.height}
+                >
+                  {response.detections.map((detection, index) => {
+                    const scaledBox = scaleBoundingBox(detection.bbox);
+                    const color = getConfidenceColor(detection.confidence);
+                    const confidence = Math.round(detection.confidence * 100);
+                    
+                    return (
+                      <React.Fragment key={index}>
+                        <Rect
+                          x={scaledBox.x}
+                          y={scaledBox.y}
+                          width={scaledBox.width}
+                          height={scaledBox.height}
+                          strokeWidth={3}
+                          stroke={color}
+                          fill="none"
+                        />
+                        <SvgText
+                          x={scaledBox.x + 5}
+                          y={scaledBox.y - 5}
+                          fontSize="14"
+                          fill={color}
+                          fontWeight="bold"
+                          stroke="white"
+                          strokeWidth={0.5}
+                        >
+                          {`${detection.class} (${confidence}%)`}
+                        </SvgText>
+                      </React.Fragment>
+                    );
+                  })}
+                </Svg>
+              )}
+              
               <TouchableOpacity 
                 style={styles.removeImageButton}
                 onPress={() => {
@@ -449,8 +546,6 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   image: {
-    width: width - 40,
-    height: width - 40,
     borderRadius: 16,
   },
   removeImageButton: {
